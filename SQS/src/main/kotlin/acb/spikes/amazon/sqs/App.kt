@@ -3,6 +3,15 @@
  */
 package acb.spikes.amazon.sqs
 
+import com.amazonaws.auth.profile.ProfileCredentialsProvider
+import com.amazonaws.handlers.AsyncHandler
+import com.amazonaws.services.sqs.AmazonSQS
+import com.amazonaws.services.sqs.AmazonSQSAsyncClientBuilder
+import com.amazonaws.services.sqs.AmazonSQSClientBuilder
+import com.amazonaws.services.sqs.model.ReceiveMessageRequest
+import com.amazonaws.services.sqs.model.ReceiveMessageResult
+import com.amazonaws.services.sqs.model.SendMessageRequest
+
 class App {
     val greeting: String
         get() {
@@ -10,6 +19,62 @@ class App {
         }
 }
 
+class MessageHandler(val queueUrl: String, val sqsClient: AmazonSQS): AsyncHandler<ReceiveMessageRequest, ReceiveMessageResult> {
+    val messageCounter = mutableMapOf<String, Int>()
+
+    override fun onSuccess(request: ReceiveMessageRequest?, result: ReceiveMessageResult?) {
+        result!!.messages.forEach {
+            messageCounter.compute(it.messageId) {
+                _, v -> if (v == null) 0 else v + 1
+            }
+
+            println()
+            println("************")
+            println(it.body)
+            println(it.messageId)
+            println(it.attributes)
+            println(it.receiptHandle)
+            println("************")
+            println()
+
+            if (messageCounter.getOrDefault(it.messageId, 0) < 3) {
+                sqsClient.changeMessageVisibility(queueUrl, it.receiptHandle, 10)
+            } else {
+                sqsClient.deleteMessage(queueUrl, it.receiptHandle)
+                println("Message ${it.messageId} deleted")
+            }
+        }
+    }
+
+    override fun onError(exception: Exception?) {
+        TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
+    }
+
+}
+
 fun main(args: Array<String>) {
     println(App().greeting)
+    val queueUrl = System.getenv("SPIKE-STANDARD-SQS-URL")
+    val sqsClient = AmazonSQSClientBuilder
+            .standard()
+            .withCredentials(ProfileCredentialsProvider("default"))
+            .withRegion("us-east-1")
+            .build()
+
+    val reader = AmazonSQSAsyncClientBuilder
+            .standard()
+            .withCredentials(ProfileCredentialsProvider("default"))
+            .withRegion("us-east-1")
+            .build()
+
+    val messageRequest = SendMessageRequest(queueUrl, "A message")
+    sqsClient.sendMessage(messageRequest)
+
+    val handler = MessageHandler(queueUrl, sqsClient)
+
+    while (true) {
+        reader.receiveMessageAsync(queueUrl, handler)
+        Thread.sleep(1000)
+        print('.')
+    }
 }
